@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Videollamada en Tiempo Real</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #121212;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+        h1 { margin-bottom: 10px; }
+        #status { color: #aaa; margin-bottom: 20px; font-style: italic; }
+        .video-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            justify-content: center;
+            width: 100%;
+            max-width: 1000px;
+        }
+        video {
+            width: 100%;
+            max-width: 450px;
+            background-color: #222;
+            border-radius: 10px;
+            transform: scaleX(-1); /* Efecto espejo */
+        }
+        .controls {
+            margin-top: 20px;
+            display: flex;
+            gap: 15px;
+        }
+        button {
+            padding: 12px 24px;
+            font-size: 16px;
+            font-weight: bold;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: 0.3s;
+        }
+        .btn-active { background-color: #007bff; color: white; }
+        .btn-inactive { background-color: #dc3545; color: white; }
+    </style>
+    <!-- Cargamos la librería PeerJS para la conexión P2P -->
+    <script src="https://unpkg.com"></script>
+</head>
+<body>
+
+    <h1>Videollamada P2P</h1>
+    <div id="status">Iniciando cámara y conectando al servidor...</div>
+
+    <div class="video-container">
+        <div>
+            <h3>Tú (Local)</h3>
+            <video id="localVideo" autoplay muted playsinline></video>
+        </div>
+        <div>
+            <h3>Usuario Conectado (Remoto)</h3>
+            <video id="remoteVideo" autoplay playsinline></video>
+        </div>
+    </div>
+
+    <div class="controls">
+        <button id="toggleAudio" class="btn-active">Audio: ON</button>
+        <button id="toggleVideo" class="btn-active">Video: ON</button>
+    </div>
+
+    <script>
+        // Configuración de la Sala usando un ID fijo compartido
+        const ROOM_ID = "sala-videollamada-render-global-12345";
+        
+        let localStream;
+        let peer;
+        let currentCall;
+
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const statusDiv = document.getElementById('status');
+        const toggleAudioBtn = document.getElementById('toggleAudio');
+        const toggleVideoBtn = document.getElementById('toggleVideo');
+
+        // 1. Solicitar permisos de cámara y micrófono
+        async function init() {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                localVideo.srcObject = localStream;
+                statusDiv.innerText = "Cámara lista. Conectando con pares...";
+                
+                // Inicializar conexión PeerJS
+                initPeer();
+            } catch (error) {
+                console.error("Error al acceder a los dispositivos:", error);
+                statusDiv.innerText = "Error: Permite el acceso a la cámara y micrófono.";
+            }
+        }
+
+        // 2. Configurar la red P2P
+        function initPeer() {
+            // Generamos dos IDs posibles para simular la sala (Anfitrión o Invitado)
+            // En un sistema real se usa un servidor de señalización, aquí alternamos IDs de sala de forma simple.
+            const isHost = Math.random() > 0.5;
+            const myId = isHost ? ROOM_ID + "-host" : ROOM_ID + "-peer";
+            const peerId = isHost ? ROOM_ID + "-peer" : ROOM_ID + "-host";
+
+            peer = new Peer(myId);
+
+            peer.on('open', (id) => {
+                statusDiv.innerText = `Conectado al servidor. Buscando otro usuario...`;
+                
+                // Si somos el invitado, intentamos llamar inmediatamente al host
+                if (!isHost) {
+                    setTimeout(() => {
+                        statusDiv.innerText = "Llamando al usuario conectado...";
+                        const call = peer.call(peerId, localStream);
+                        handleCall(call);
+                    }, 2000); // Pequeña espera para asegurar que el canal esté libre
+                }
+            });
+
+            // Escuchar llamadas entrantes (Si somos el Host)
+            peer.on('call', (call) => {
+                statusDiv.innerText = "Recibiendo videollamada...";
+                call.answer(localStream); // Responder con nuestra cámara
+                handleCall(call);
+            });
+
+            peer.on('error', (err) => {
+                // Si el ID ya está tomado (ej. ya hay un Host), reintentamos con el otro ID
+                if (err.type === 'unavailable-id') {
+                    peer.destroy();
+                    const alternateId = myId.includes("-host") ? ROOM_ID + "-peer" : ROOM_ID + "-host";
+                    peer = new Peer(alternateId);
+                    // Repetir flujos...
+                }
+                console.log("PeerJS error:", err.type);
+            });
+        }
+
+        // 3. Gestionar el flujo de video del otro usuario
+        function handleCall(call) {
+            currentCall = call;
+            call.on('stream', (remoteStream) => {
+                remoteVideo.srcObject = remoteStream;
+                statusDiv.innerText = "¡Conectado con otro usuario!";
+            });
+
+            call.on('close', () => {
+                statusDiv.innerText = "El otro usuario se ha desconectado.";
+                remoteVideo.srcObject = null;
+            });
+        }
+
+        // 4. Controles de Activación/Desactivación de Audio y Video
+        toggleAudioBtn.addEventListener('click', () => {
+            const audioTrack = localStream.getAudioTracks()[0];
+            if (audioTrack.enabled) {
+                audioTrack.enabled = false;
+                toggleAudioBtn.innerText = "Audio: OFF";
+                toggleAudioBtn.className = "btn-inactive";
+            } else {
+                audioTrack.enabled = true;
+                toggleAudioBtn.innerText = "Audio: ON";
+                toggleAudioBtn.className = "btn-active";
+            }
+        });
+
+        toggleVideoBtn.addEventListener('click', () => {
+            const videoTrack = localStream.getVideoTracks()[0];
+            if (videoTrack.enabled) {
+                videoTrack.enabled = false;
+                toggleVideoBtn.innerText = "Video: OFF";
+                toggleVideoBtn.className = "btn-inactive";
+            } else {
+                videoTrack.enabled = true;
+                toggleVideoBtn.innerText = "Video: ON";
+                toggleVideoBtn.className = "btn-active";
+            }
+        });
+
+        // Iniciar la aplicación al cargar
+        window.onload = init;
+    </script>
+</body>
+</html>
